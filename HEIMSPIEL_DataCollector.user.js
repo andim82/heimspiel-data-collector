@@ -8,6 +8,8 @@
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
+// @downloadURL  https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
 // ==/UserScript==
 
 (function () {
