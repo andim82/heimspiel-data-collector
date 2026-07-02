@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.7
+// @version      29.0.12
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
@@ -259,12 +259,20 @@
         if (h==='rnk'||h==='rank') cmap.rnk=i;
         if (h==='team') cmap.team=i;
         if (h==='time'||h==='zeit') cmap.time=i;
+        // TTT (Team Time Trial) result pages show a dedicated "+time" gap
+        // column alongside the absolute "time" column (e.g. "TIME" = 25:26.410,
+        // "+TIME" = +0:07). When present, this is the authoritative gap value
+        // and must NOT be re-derived via parseTTGap (which assumes a totally
+        // different mm.ss,ff single-column TT format and produces wrong gaps).
+        if (h==='+time'||h==='+ time'||h==='+zeit'||h==='gap') cmap.gap=i;
       });
 
       const entries=[],deferred=[];
       let maxRank=0, isTT=false;
 
-      if (cmap.time!==undefined) {
+      const hasGapCol = cmap.gap!==undefined;
+
+      if (!hasGapCol && cmap.time!==undefined) {
         for (const row of visRows) {
           const raw=extractTimeText(row.querySelectorAll('td')[cmap.time]);
           if (raw&&!isSameTimeMarker(raw)){isTT=isTTFormat(raw);break;}
@@ -285,7 +293,19 @@
         const teamName=teamLink?teamLink.textContent.replace(/\s+/g,' ').trim():cleanCellText(teamTd);
         if (!teamName) continue;
         let resultValue='';
-        if (cmap.time!==undefined&&tds[cmap.time]) {
+        if (hasGapCol) {
+          // Dedicated TTT layout: rank 1 uses the absolute "time" column,
+          // all other ranks use the dedicated "+time" gap column verbatim
+          // (already formatted like "+0:07" by PCS) — no parsing needed.
+          if (rankNum===1 && cmap.time!==undefined && tds[cmap.time]) {
+            resultValue = dedupeTime(extractTimeText(tds[cmap.time]));
+          } else if (tds[cmap.gap]) {
+            const gapRaw = dedupeTime(extractTimeText(tds[cmap.gap]));
+            if (!isSameTimeMarker(gapRaw)) {
+              resultValue = gapRaw.startsWith('+') ? gapRaw : (gapRaw ? '+'+gapRaw : '');
+            }
+          }
+        } else if (cmap.time!==undefined&&tds[cmap.time]) {
           const raw=dedupeTime(extractTimeText(tds[cmap.time]));
           if (!isSameTimeMarker(raw)) {
             resultValue=isTT?(entries.length===0?parseTTTime(raw):parseTTGap(raw)):raw;
@@ -296,25 +316,88 @@
       }
       let nextRank=maxRank+1;
       for (const e of deferred){e.rankNum=nextRank++;entries.push(e);}
-      let last='';
-      for (let i=0;i<entries.length;i++){
-        const e=entries[i];
-        if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
-          last=e.resultValue;
-        } else {
-          e.resultValue='';
-          e.resultValue=(i===1&&last)?'0:00':last;
+      if (!hasGapCol) {
+        let last='';
+        for (let i=0;i<entries.length;i++){
+          const e=entries[i];
+          if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
+            last=e.resultValue;
+          } else {
+            e.resultValue='';
+            e.resultValue=(i===1&&last)?'0:00':last;
+          }
         }
-      }
-      // Prefix '+' to follow-up times
-      for (let i=1;i<entries.length;i++){
-        const v=entries[i].resultValue;
-        if(v&&!v.startsWith('+')&&/^\d/.test(v)) entries[i].resultValue='+'+v;
+        // Prefix '+' to follow-up times
+        for (let i=1;i<entries.length;i++){
+          const v=entries[i].resultValue;
+          if(v&&!v.startsWith('+')&&/^\d/.test(v)) entries[i].resultValue='+'+v;
+        }
       }
       if (entries.length) return {entries,error:null};
     }
     return {entries:[],error:'Keine Teams-Tabelle gefunden.'};
   }
+  // ─── TEAMS TIME-TRIAL LIST (non-table layout, e.g. TTT stage results) ─────
+  // PCS renders TTT stage result pages (e.g. .../stage-5) NOT as an HTML
+  // <table>, but as a list of <li> blocks, each containing:
+  //   - rank number (div.w10)
+  //   - team name (a[href*="/team/"])
+  //   - absolute time for rank 1 (div.time)
+  //   - gap-to-leader for all other ranks (the div right after div.time,
+  //     rendered WITHOUT a leading "+" in the raw HTML — e.g. "0:07" — even
+  //     though the page visually shows "+0:07")
+  //   - a nested <table> of individual riders, which we ignore entirely.
+  function scrapeTeamsTimeList() {
+    const teamLinks = Array.from(document.querySelectorAll('li a[href^="team/"], li a[href*="/team/"]'))
+      .filter(a => isVisible(a) && a.textContent.trim().length >= 3);
+    if (!teamLinks.length) return { entries: [], error: null };
+
+    const entries = [];
+    const seenTeams = new Set();
+
+    for (const link of teamLinks) {
+      const li = link.closest('li');
+      if (!li || seenTeams.has(li)) continue;
+
+      const teamName = link.textContent.replace(/\s+/g, ' ').trim();
+      if (!teamName) continue;
+
+      // Rank: nearest preceding sibling div within the same "w50 left" block
+      let rankBlock = link.closest('div.w50, div[class*="w50"]');
+      let rankNum = null;
+      if (rankBlock) {
+        const rankDiv = rankBlock.querySelector('div.w10, div[class*="w10"]');
+        const rnkTxt = (rankDiv?.textContent || '').trim();
+        if (/^\d+$/.test(rnkTxt)) rankNum = parseInt(rnkTxt, 10);
+      }
+      if (rankNum === null) continue; // not a valid team row
+
+      // Time / gap block: sibling of the rank block, tagged "timeSpeed"
+      let resultValue = '';
+      const timeSpeedBlock = rankBlock ? rankBlock.parentElement?.querySelector('.timeSpeed') : null;
+      if (timeSpeedBlock) {
+        const timeDiv = timeSpeedBlock.querySelector('.time');
+        const gapDiv = timeDiv ? timeDiv.nextElementSibling : null;
+        if (rankNum === 1) {
+          const rawTime = dedupeTime((timeDiv?.textContent || '').trim());
+          // Strip sub-second precision (.410, .220 etc.) — only mm:ss needed
+          resultValue = rawTime.replace(/\.\d+$/, '');
+        } else {
+          const gapRaw = dedupeTime((gapDiv?.textContent || '').trim());
+          if (gapRaw && !isSameTimeMarker(gapRaw)) {
+            resultValue = gapRaw.startsWith('+') ? gapRaw : '+' + gapRaw;
+          }
+        }
+      }
+
+      seenTeams.add(li);
+      entries.push({ riderName: teamName, teamName, rankNum, resultValue });
+    }
+
+    entries.sort((a, b) => a.rankNum - b.rankNum);
+    return { entries, error: entries.length ? null : 'Keine Team-Zeiten gefunden.' };
+  }
+
 
   // ─── SCRAPE MAIN TABLE ────────────────────────────────────────────────────
 
@@ -727,7 +810,23 @@
 
       if (!entries.length) {
         const table=findVisibleResultsTable();
-        if (!table) return {csv:'',count:0,error:'Keine sichtbare Ergebnistabelle gefunden.\n\n• Seite evtl. noch nicht vollständig geladen\n• Falscher Tab aktiv\n\n↺ Neu laden klicken.'};
+        if (!table) {
+          // Fallback: TTT (Team Time Trial) stage results have no per-rider
+          // table at all — only a team-level table (TEAM / TIME / +TIME),
+          // which findVisibleResultsTable() never matches because it requires
+          // a rank-numbered row alongside a RIDER/NAME column. Try the
+          // team-table scraper before giving up, using the current mraId
+          // as the CSV column suffix (e.g. at0-match_result, at0-rank).
+          const ttListFallback=scrapeTeamsTimeList();
+          if (ttListFallback.entries.length) {
+            return {csv:buildCSV(ttListFallback.entries,mraId,true),count:ttListFallback.entries.length};
+          }
+          const ttFallback=scrapeTeamsTable(mraId);
+          if (ttFallback.entries.length) {
+            return {csv:buildCSV(ttFallback.entries,mraId,true),count:ttFallback.entries.length};
+          }
+          return {csv:'',count:0,error:'Keine sichtbare Ergebnistabelle gefunden.\n\n• Seite evtl. noch nicht vollständig geladen\n• Falscher Tab aktiv\n\n↺ Neu laden klicken.'};
+        }
         const result=scrapeTable(table,mraId);
         if (result.error) return {csv:'',count:0,error:result.error};
         entries=result.entries;
@@ -742,9 +841,9 @@
     }
   }
 
-  function buildCSV(entries, mraId) {
+  function buildCSV(entries, mraId, forceTeams) {
     const isSL=mraId==='41';
-    const isTeams=(mraId==='64'||mraId==='34');
+    const isTeams=forceTeams||(mraId==='64'||mraId==='34');
     const hdr=isSL
       ?`source_team_id;source_team_name;source_person_id;source_person_name;at${mraId}-rank`
       : isTeams
