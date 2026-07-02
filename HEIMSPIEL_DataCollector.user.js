@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.12
+// @version      29.0.13
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
@@ -488,6 +488,7 @@
           e.resultValue = '';  // clear marker
           if (i===1 && last) {
             e.resultValue='0:00';
+            last='0:00'; // update reference so rank 3+ inherit "same as leader" correctly, not the winner's absolute time
           } else {
             e.resultValue=last;
           }
