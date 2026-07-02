@@ -1,16 +1,16 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.5
+// @version      29.0.7
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
 // @grant        GM_info
-// @run-at       document-idle
-// @updateURL   https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
-// @downloadURL https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
+// @run-at       document-end
+// @updateURL    https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
+// @downloadURL  https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
 // ==/UserScript==
 
 (function () {
