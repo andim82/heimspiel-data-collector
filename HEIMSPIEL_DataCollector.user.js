@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.13
+// @version      29.0.14
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
@@ -18,25 +18,22 @@
 
   const LOGO_URL = 'https://heimspiel.de/wp-content/uploads/2022/09/logo-weiss-transparent-rgb.png';
 
-  // Internal iteration version (auto-read from the @version header via GM_info,
-  // so this never has to be maintained twice). Displayed in the footer as
-  // "V. 1.0.<build>" so editors can quickly confirm they run the latest script.
   const INTERNAL_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.0.0';
   const DISPLAY_VERSION = `1.0.${INTERNAL_VERSION.replace(/\./g, '')}`;
 
   const MRA_OPTIONS = [
-    { id: '0',   label: 'AT:0  – Zeit Einzelwertung (Stage)' },
-    { id: '32',  label: 'AT:32 – Punkte Sprint (Today)' },
-    { id: '31',  label: 'AT:31 – Punkte Bergwertung (Today)' },
-    { id: '33',  label: 'AT:33 – Nachwuchswertung (Today)' },
-    { id: '34',  label: 'AT:34 – Zeit Teamwertung (Today)' },
-    { id: '40',  label: 'AT:40 – Fahrerwertung Teamzeitfahren' },
-    { id: '41',  label: 'AT:41 – Startliste' },
-    { id: '61',  label: 'AT:61 – Einzelwertung gesamt (GC)' },
-    { id: '62',  label: 'AT:62 – Bergwertung gesamt (KOM)' },
-    { id: '63',  label: 'AT:63 – Sprintwertung gesamt (Points)' },
-    { id: '64',  label: 'AT:64 – Teamwertung gesamt' },
-    { id: '65',  label: 'AT:65 – Nachwuchswertung gesamt (Youth)' },
+    { id: '0',  label: 'AT:0 – Zeit Einzelwertung (Stage)' },
+    { id: '32', label: 'AT:32 – Punkte Sprint (Today)' },
+    { id: '31', label: 'AT:31 – Punkte Bergwertung (Today)' },
+    { id: '33', label: 'AT:33 – Nachwuchswertung (Today)' },
+    { id: '34', label: 'AT:34 – Zeit Teamwertung (Today)' },
+    { id: '40', label: 'AT:40 – Fahrerwertung Teamzeitfahren' },
+    { id: '41', label: 'AT:41 – Startliste' },
+    { id: '61', label: 'AT:61 – Einzelwertung gesamt (GC)' },
+    { id: '62', label: 'AT:62 – Bergwertung gesamt (KOM)' },
+    { id: '63', label: 'AT:63 – Sprintwertung gesamt (Points)' },
+    { id: '64', label: 'AT:64 – Teamwertung gesamt' },
+    { id: '65', label: 'AT:65 – Nachwuchswertung gesamt (Youth)' },
   ];
 
   const TYPE_LABELS = {
@@ -46,38 +43,38 @@
     startlist: 'Startliste', unknown: 'Unbekannte Seite',
   };
 
-  // MRA mapping: pageType → { general, today }
   const MRA_MAP = {
-    stage:     { general: '0',  today: '0'  },  // Stage hat keine Today-Ansicht
-    gc:        { general: '61', today: '61' },   // GC hat keine Today-Ansicht
+    stage:     { general: '0',  today: '0' },
+    gc:        { general: '61', today: '61' },
     points:    { general: '63', today: '32' },
     kom:       { general: '62', today: '31' },
     youth:     { general: '65', today: '33' },
     teams:     { general: '64', today: '34' },
     startlist: { general: '41', today: '41' },
-    unknown:   { general: '0',  today: '0'  },
+    unknown:   { general: '0',  today: '0' },
   };
 
-  // Types that support a Today view
   const HAS_TODAY = new Set(['points', 'kom', 'youth', 'teams']);
 
   const TIME_MRAS   = new Set(['0','34','40','61','65','64','33']);
-  // AT:33 = Youth Today (time-based), AT:34 = Teams Today (time-based)
-  // AT:32 = Points Today (points), AT:31 = KOM Today (points)
   const POINTS_MRAS = new Set(['32','31','62','63']);
-  // Note: '33' removed from POINTS_MRAS, now in TIME_MRAS
+
+  // Non-numeric result/status markers (DNS/DNF/DNQ/DSQ/OTL/NR) that in the
+  // AAA V1 export must be moved into the "comment" column instead of
+  // "match_result".
+  const STATUS_MARKERS = /^(dns|dnf|dnq|dsq|otl|nr)$/i;
 
   // ─── URL DETECTION ────────────────────────────────────────────────────────
 
   function detectPageType() {
     const u = window.location.pathname.toLowerCase();
-    if (u.includes('/startlist'))        return 'startlist';
-    if (u.match(/stage-\d+-gc$/))       return 'gc';
-    if (u.match(/stage-\d+-points$/))   return 'points';
-    if (u.match(/stage-\d+-kom$/))      return 'kom';
-    if (u.match(/stage-\d+-youth$/))    return 'youth';
+    if (u.includes('/startlist')) return 'startlist';
+    if (u.match(/stage-\d+-gc$/)) return 'gc';
+    if (u.match(/stage-\d+-points$/)) return 'points';
+    if (u.match(/stage-\d+-kom$/)) return 'kom';
+    if (u.match(/stage-\d+-youth$/)) return 'youth';
     if (u.match(/stage-\d+-teams-gc$/)) return 'teams';
-    if (u.match(/stage-\d+$/))          return 'stage';
+    if (u.match(/stage-\d+$/)) return 'stage';
     return 'unknown';
   }
 
@@ -96,9 +93,7 @@
 
   function isSameTimeMarker(t) {
     const s = (t || '').trim();
-    // PCS same-time markers: ',,' (double comma), ',' (single comma),
-    // '″' (double prime), '"', "''", or empty string
-    return s === ',,' || s === ',' || s === '″' || s === '"' || s === "''" || s === '' || s === '″';
+    return s === ',,' || s === ',' || s === '″' || s === '"' || s === "''" || s === '';
   }
 
   function isTTFormat(t) {
@@ -121,7 +116,6 @@
     return `+${String(parseInt(m[1],10)).padStart(2,'0')}:${String(parseInt(m[2],10)).padStart(2,'0')}`;
   }
 
-  // Strip bonus/colored spans from time cell, then deduplicate
   function extractTimeText(td) {
     if (!td) return '';
     const clone = td.cloneNode(true);
@@ -132,8 +126,6 @@
   function dedupeTime(t) {
     if (!t) return t;
     let s = t.trim();
-    // Normalise leading '*' (PCS special-case marker) to '+' so downstream
-    // time parsers (e.g. calcSecondsFromString) recognise the value correctly.
     s = s.replace(/[\*\u2217\u204e\uff0a]/g, '+');
     if (s.length % 2 === 0) {
       const half = s.length / 2;
@@ -193,6 +185,48 @@
     return raw;
   }
 
+  // ─── RIDER NAME SPLIT (for AAA V1 export: "NACHNAME Vorname") ─────────────
+  // PCS marks the surname with <span class="uppercase">Nachname</span> Vorname
+  // inside the rider link. When present, this gives a 100% reliable split.
+  // Some rows (rare PCS inconsistency) omit the span entirely — in that case
+  // we fall back to a heuristic (last word = firstname, everything before it
+  // = surname), which matches PCS's own naming convention. The surname is
+  // ALWAYS forced to upper case in the output, regardless of source casing,
+  // per editorial requirement.
+  function splitNameHeuristic(full) {
+    const parts = (full || '').trim().split(/\s+/);
+    if (parts.length < 2) return { surname: (full||'').toUpperCase(), firstname: '', full: full||'' };
+    const firstname = parts[parts.length - 1];
+    const surname = parts.slice(0, -1).join(' ').toUpperCase();
+    return { surname, firstname, full };
+  }
+
+  function extractRiderNameParts(riderTd, teamName) {
+    if (!riderTd) return { surname: '', firstname: '', full: '' };
+    const riderLink = riderTd.querySelector('a[href*="/rider/"]');
+
+    if (riderLink) {
+      const full = riderLink.textContent.replace(/\s+/g, ' ').trim();
+      const upperSpan = riderLink.querySelector('span.uppercase');
+      if (upperSpan) {
+        const surname = upperSpan.textContent.replace(/\s+/g, ' ').trim().toUpperCase();
+        const clone = riderLink.cloneNode(true);
+        const spanClone = clone.querySelector('span.uppercase');
+        if (spanClone) spanClone.remove();
+        const firstname = clone.textContent.replace(/\s+/g, ' ').trim();
+        return { surname, firstname, full };
+      }
+      return splitNameHeuristic(full);
+    }
+
+    const raw  = cleanCellText(riderTd);
+    const team = (teamName || '').trim();
+    let full = raw;
+    if (team && raw.endsWith(team)) full = raw.slice(0, raw.length - team.length).trim();
+    else if (team && raw.includes(team)) full = raw.slice(0, raw.indexOf(team)).trim();
+    return splitNameHeuristic(full);
+  }
+
   // ─── COLUMN MAP ───────────────────────────────────────────────────────────
 
   function getColMap(table) {
@@ -210,7 +244,7 @@
       else if ((t==='time'||t==='zeit') && map.time===undefined)        map.time  = i;
       else if ((t==='bonis'||t==='bonus') && map.bonus===undefined)     map.bonus = i;
       else if (t==='prev' && map.prev===undefined)                      map.prev  = i;
-      else if ((t==='▲▼'||t==='trend') && map.trend===undefined)       map.trend = i;
+      else if ((t==='▲▼'||t==='trend') && map.trend===undefined)        map.trend = i;
     });
     return (map.rider!==undefined && map.team!==undefined) ? map : null;
   }
@@ -245,11 +279,11 @@
       const hrow = t.querySelector('thead tr') || t.querySelector('tr');
       if (!hrow) continue;
       const headers = Array.from(hrow.querySelectorAll('th,td')).map(c=>c.textContent.trim().toLowerCase());
-      const hasRnk  = headers.some(h=>h==='rnk'||h==='rank');
+      const hasRnk = headers.some(h=>h==='rnk'||h==='rank');
       const hasTeam = headers.some(h=>h==='team');
       const hasRider= headers.some(h=>h==='rider'||h==='name');
       if (!hasRnk || !hasTeam) continue;
-      if (hasRider) continue; // skip regular rider tables
+      if (hasRider) continue;
 
       const visRows = Array.from(t.querySelectorAll('tbody tr')).filter(r=>isVisible(r));
       if (!visRows.length) continue;
@@ -259,11 +293,6 @@
         if (h==='rnk'||h==='rank') cmap.rnk=i;
         if (h==='team') cmap.team=i;
         if (h==='time'||h==='zeit') cmap.time=i;
-        // TTT (Team Time Trial) result pages show a dedicated "+time" gap
-        // column alongside the absolute "time" column (e.g. "TIME" = 25:26.410,
-        // "+TIME" = +0:07). When present, this is the authoritative gap value
-        // and must NOT be re-derived via parseTTGap (which assumes a totally
-        // different mm.ss,ff single-column TT format and produces wrong gaps).
         if (h==='+time'||h==='+ time'||h==='+zeit'||h==='gap') cmap.gap=i;
       });
 
@@ -294,11 +323,8 @@
         if (!teamName) continue;
         let resultValue='';
         if (hasGapCol) {
-          // Dedicated TTT layout: rank 1 uses the absolute "time" column,
-          // all other ranks use the dedicated "+time" gap column verbatim
-          // (already formatted like "+0:07" by PCS) — no parsing needed.
           if (rankNum===1 && cmap.time!==undefined && tds[cmap.time]) {
-            resultValue = dedupeTime(extractTimeText(tds[cmap.time]));
+            resultValue = dedupeTime(extractTimeText(tds[cmap.time])).replace(/\.\d+$/, '');
           } else if (tds[cmap.gap]) {
             const gapRaw = dedupeTime(extractTimeText(tds[cmap.gap]));
             if (!isSameTimeMarker(gapRaw)) {
@@ -314,8 +340,10 @@
         if (isNonNumeric) deferred.push({rankText:rnkRaw,rankNum:null,isNonNumeric:true,riderName:teamName,teamName,resultValue:rnkRaw});
         else entries.push({rankText:rnkRaw,rankNum,isNonNumeric:false,riderName:teamName,teamName,resultValue});
       }
+
       let nextRank=maxRank+1;
       for (const e of deferred){e.rankNum=nextRank++;entries.push(e);}
+
       if (!hasGapCol) {
         let last='';
         for (let i=0;i<entries.length;i++){
@@ -323,30 +351,24 @@
           if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
             last=e.resultValue;
           } else {
-            e.resultValue='';
-            e.resultValue=(i===1&&last)?'0:00':last;
+            e.resultValue = '';
+            if (i===1 && last) { e.resultValue='0:00'; last='0:00'; }
+            else e.resultValue=last;
           }
         }
-        // Prefix '+' to follow-up times
-        for (let i=1;i<entries.length;i++){
+        for (let i=1;i<entries.length;i++) {
           const v=entries[i].resultValue;
-          if(v&&!v.startsWith('+')&&/^\d/.test(v)) entries[i].resultValue='+'+v;
+          if (v && !v.startsWith('+') && /^\d/.test(v)) entries[i].resultValue='+'+v;
         }
       }
-      if (entries.length) return {entries,error:null};
+
+      if (entries.length) return { entries, error: null };
     }
-    return {entries:[],error:'Keine Teams-Tabelle gefunden.'};
+    return { entries: [], error: null };
   }
-  // ─── TEAMS TIME-TRIAL LIST (non-table layout, e.g. TTT stage results) ─────
-  // PCS renders TTT stage result pages (e.g. .../stage-5) NOT as an HTML
-  // <table>, but as a list of <li> blocks, each containing:
-  //   - rank number (div.w10)
-  //   - team name (a[href*="/team/"])
-  //   - absolute time for rank 1 (div.time)
-  //   - gap-to-leader for all other ranks (the div right after div.time,
-  //     rendered WITHOUT a leading "+" in the raw HTML — e.g. "0:07" — even
-  //     though the page visually shows "+0:07")
-  //   - a nested <table> of individual riders, which we ignore entirely.
+
+  // ─── TEAMS TIME LIST (TTT block-list layout, no <table>) ──────────────────
+
   function scrapeTeamsTimeList() {
     const teamLinks = Array.from(document.querySelectorAll('li a[href^="team/"], li a[href*="/team/"]'))
       .filter(a => isVisible(a) && a.textContent.trim().length >= 3);
@@ -362,7 +384,6 @@
       const teamName = link.textContent.replace(/\s+/g, ' ').trim();
       if (!teamName) continue;
 
-      // Rank: nearest preceding sibling div within the same "w50 left" block
       let rankBlock = link.closest('div.w50, div[class*="w50"]');
       let rankNum = null;
       if (rankBlock) {
@@ -370,9 +391,8 @@
         const rnkTxt = (rankDiv?.textContent || '').trim();
         if (/^\d+$/.test(rnkTxt)) rankNum = parseInt(rnkTxt, 10);
       }
-      if (rankNum === null) continue; // not a valid team row
+      if (rankNum === null) continue;
 
-      // Time / gap block: sibling of the rank block, tagged "timeSpeed"
       let resultValue = '';
       const timeSpeedBlock = rankBlock ? rankBlock.parentElement?.querySelector('.timeSpeed') : null;
       if (timeSpeedBlock) {
@@ -380,7 +400,6 @@
         const gapDiv = timeDiv ? timeDiv.nextElementSibling : null;
         if (rankNum === 1) {
           const rawTime = dedupeTime((timeDiv?.textContent || '').trim());
-          // Strip sub-second precision (.410, .220 etc.) — only mm:ss needed
           resultValue = rawTime.replace(/\.\d+$/, '');
         } else {
           const gapRaw = dedupeTime((gapDiv?.textContent || '').trim());
@@ -397,7 +416,6 @@
     entries.sort((a, b) => a.rankNum - b.rankNum);
     return { entries, error: entries.length ? null : 'Keine Team-Zeiten gefunden.' };
   }
-
 
   // ─── SCRAPE MAIN TABLE ────────────────────────────────────────────────────
 
@@ -441,6 +459,7 @@
       const riderName=extractRiderName(tds[map.rider],teamName);
       if (!riderName||riderName.length>60) continue;
       if (/relegated|from \d+th to \d+/i.test(riderName)) continue;
+      const nameParts=extractRiderNameParts(tds[map.rider],teamName);
 
       let resultValue='';
       if (isTime) {
@@ -448,6 +467,7 @@
           const raw=dedupeTime(extractTimeText(tds[map.time]));
           if (!isSameTimeMarker(raw)) {
             resultValue=isTT?(entries.length===0?parseTTTime(raw):parseTTGap(raw)):raw;
+            if (entries.length===0) resultValue=resultValue.replace(/\.\d+$/, '');
           }
         }
       } else if (isPoints) {
@@ -465,8 +485,8 @@
         }
       }
 
-      if (isNonNumeric) deferred.push({rankText:rankRaw,rankNum:null,isNonNumeric:true,riderName,teamName,resultValue:rankRaw});
-      else entries.push({rankText:rankRaw,rankNum,isNonNumeric:false,riderName,teamName,resultValue});
+      if (isNonNumeric) deferred.push({rankText:rankRaw,rankNum:null,isNonNumeric:true,riderName,teamName,resultValue:rankRaw,nameParts});
+      else entries.push({rankText:rankRaw,rankNum,isNonNumeric:false,riderName,teamName,resultValue,nameParts});
     }
 
     let nextRank=maxRank+1;
@@ -475,27 +495,26 @@
     if (isTime) {
       // Fill same-time markers:
       // Rank 1  → keep winner time as-is
-      // Rank 2  → if PCS shows 0:00 (same as winner) keep as '0:00'; if empty fill with last
+      // Rank 2  → if PCS shows empty (same as winner) → '0:00'; also updates
+      //           the reference so rank 3+ inherit "same as leader" (0:00),
+      //           not the winner's absolute time.
       // Rank 3+ → empty/marker → fill with last known real time
       // After fill: prefix '+' to all follow-up times (ranks 2+)
       let last='';
       for (let i=0;i<entries.length;i++) {
         const e=entries[i];
-        // Treat same-time markers that may have slipped through as empty
         if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
           last=e.resultValue;
         } else {
-          e.resultValue = '';  // clear marker
+          e.resultValue = '';
           if (i===1 && last) {
             e.resultValue='0:00';
-            last='0:00'; // update reference so rank 3+ inherit "same as leader" correctly, not the winner's absolute time
+            last='0:00';
           } else {
             e.resultValue=last;
           }
         }
       }
-      // Prefix '+' to follow-up times (index 1+), but not to winner, not to non-numeric values,
-      // not to values already starting with '+', and not to DNS/DNF etc.
       for (let i=1;i<entries.length;i++) {
         const v=entries[i].resultValue;
         if (v && !v.startsWith('+') && /^\d/.test(v)) {
@@ -510,7 +529,7 @@
   // ─── SCRAPE TODAY POINTS (multi-table sum) ────────────────────────────────
 
   function scrapeTodayPoints() {
-    const totals={}, riderNames={}, teamNames={};
+    const totals={}, riderNames={}, teamNames={}, ridersParts={};
     let tablesFound=0;
 
     for (const table of document.querySelectorAll('table')) {
@@ -540,7 +559,12 @@
         if (isNaN(pts)||pts<=0) continue;
 
         const key=riderKey||slugify(riderName);
-        if (!totals[key]){totals[key]=0;riderNames[key]=riderName;teamNames[key]=teamName;}
+        if (!totals[key]){
+          totals[key]=0;
+          riderNames[key]=riderName;
+          teamNames[key]=teamName;
+          ridersParts[key]=extractRiderNameParts(tds[map.rider],teamName);
+        }
         totals[key]+=pts;
       }
     }
@@ -548,7 +572,7 @@
     if (tablesFound===0) return [];
 
     const sorted=Object.entries(totals)
-      .map(([key,pts])=>({riderName:riderNames[key],teamName:teamNames[key],resultValue:pts}))
+      .map(([key,pts])=>({riderName:riderNames[key],teamName:teamNames[key],resultValue:pts,nameParts:ridersParts[key]}))
       .sort((a,b)=>b.resultValue-a.resultValue);
 
     let rank=1;
@@ -564,10 +588,6 @@
   function scrapeStartlist() {
     const entries = [], seen = new Set();
 
-    // ── Rider name validator ─────────────────────────────────────────────────
-    // PCS uses "SURNAME Firstname" (or "SURNAME1 SURNAME2 Firstname") format.
-    // Scan words right-to-left: trailing mixed-case words = firstname(s),
-    // remaining all-caps words = surname. Both zones must be present and valid.
     const KNOWN_BAD_PREFIXES = new Set(['DS','TT','GC','GP','TDF','UCI','CX','MTB','TTT']);
 
     function isValidRiderName(name) {
@@ -575,21 +595,15 @@
       const parts = name.trim().split(/\s+/);
       if (parts.length < 2) return false;
 
-      // Collect firstname words from the right (start upper, contain lowercase)
-      // Note: German ß never has a true uppercase form (toUpperCase() turns it
-      // into "SS"), so a word like "GROßSCHARTNER" would always fail the
-      // "w !== w.toUpperCase()" mixed-case check and get misclassified as a
-      // firstname. We normalise ß -> SS on both sides of the comparison so an
-      // all-caps surname containing ß is still recognised as all-caps.
       const firstnameParts = [];
       for (let i = parts.length - 1; i >= 0; i--) {
         const w = parts[i];
         if (!w || !w[0].match(/[A-Za-z\u00C0-\u024F]/)) return false;
         const wNorm = w.replace(/ß/g, 'SS');
         if (w[0] === w[0].toUpperCase() && wNorm !== wNorm.toUpperCase()) {
-          firstnameParts.unshift(w); // mixed-case = firstname
+          firstnameParts.unshift(w);
         } else {
-          break; // all-caps = start of surname zone
+          break;
         }
       }
       if (!firstnameParts.length) return false;
@@ -599,26 +613,18 @@
       if (KNOWN_BAD_PREFIXES.has(surnameParts[0].toUpperCase())) return false;
 
       for (const sp of surnameParts) {
-        // Treat German ß as already-uppercase: PCS renders surnames like
-        // "GROßSCHARTNER" with a lowercase ß even in all-caps names, because
-        // German has no true uppercase ß. Without this exception,
-        // sp.toUpperCase() (-> "GROSSSCHARTNER") never equals sp and the
-        // rider gets incorrectly rejected as invalid.
         const spNorm = sp.replace(/ß/g, 'SS');
-        if (spNorm !== spNorm.toUpperCase()) return false; // must be all-caps
+        if (spNorm !== spNorm.toUpperCase()) return false;
         if (!sp[0].match(/[A-Z\u00C0-\u024F]/)) return false;
-        // Single 2-char surname part only OK as part of multi-word surname (DE, LE, VAN etc.)
         if (sp.length < 3 && surnameParts.length === 1) return false;
         if (sp.length < 2) return false;
       }
       return true;
     }
 
-    // ── Parse bib + name from a LI element ───────────────────────────────────
     function parseLI(li) {
       let bib = '', name = '';
       for (const child of li.childNodes) {
-        // Skip flag images and flag spans
         if (child.nodeType === Node.ELEMENT_NODE) {
           const tag = child.tagName;
           if (tag === 'IMG' || tag === 'SVG') continue;
@@ -632,22 +638,19 @@
           name = ct.replace(/\s*[\(*#].*$/, '').replace(/\s*\*\s*$/, '').trim();
         }
       }
-      // Fallback: parse full textContent
       if (!name) {
         const full = (li.textContent || '').replace(/\s+/g, ' ').trim();
         const m = full.match(/^(-|\d{1,3})\s*([A-ZÁÀÂÄÃÅÆÇÉÈÊËÍÌÎÏÑÓÒÔÖÕØŒŠŽÞÐÚÙÛÜÝ\u00C0-\u024F][A-Za-z\u00C0-\u024F0-9 \-\'\.]+)/);
         if (m) {
-          bib  = m[1] === '-' ? '' : m[1];
+          bib = m[1] === '-' ? '' : m[1];
           name = m[2].replace(/\s*[\(*#].*$/, '').trim();
         }
       }
       if (!name) return null;
-      // ★ Core filter: must match SURNAME Firstname convention
       if (!isValidRiderName(name)) return null;
       return { bib, name };
     }
 
-    // ── Primary: find team containers via team links ──────────────────────────
     const processedTeams = new Set();
     const processedContainers = new Set();
 
@@ -661,7 +664,6 @@
       const teamName = (tLink.textContent || '').replace(/\s+/g, ' ').trim();
       if (!teamName || processedTeams.has(teamName)) continue;
 
-      // Walk up DOM to find nearest ancestor that contains LIs (= the team block)
       let container = tLink.parentElement;
       let riderContainer = null;
       while (container && container !== document.body) {
@@ -677,18 +679,17 @@
       processedTeams.add(teamName);
 
       for (const li of riderContainer.querySelectorAll('li')) {
-        if (li.contains(tLink)) continue;                    // skip the team LI itself
-        if (li.querySelector('a[href*="/team/"]')) continue; // skip other-team LIs
+        if (li.contains(tLink)) continue;
+        if (li.querySelector('a[href*="/team/"]')) continue;
         const parsed = parseLI(li);
         if (!parsed) continue;
         const key = teamName + '|' + parsed.name;
         if (seen.has(key)) continue;
         seen.add(key);
-        entries.push({ riderName: parsed.name, teamName, rankNum: parsed.bib, resultValue: '-' });
+        entries.push({ riderName: parsed.name, teamName, rankNum: parsed.bib, resultValue: '-', nameParts: splitNameHeuristic(parsed.name) });
       }
     }
 
-    // ── Fallback: TreeWalker (v16-style) with isValidRiderName guard ──────────
     if (entries.length === 0) {
       const walker = document.createTreeWalker(
         document.body, NodeFilter.SHOW_ELEMENT,
@@ -721,43 +722,23 @@
           const key = currentTeam + '|' + parsed.name;
           if (seen.has(key)) continue;
           seen.add(key);
-          entries.push({ riderName: parsed.name, teamName: currentTeam, rankNum: parsed.bib, resultValue: '-' });
+          entries.push({ riderName: parsed.name, teamName: currentTeam, rankNum: parsed.bib, resultValue: '-', nameParts: splitNameHeuristic(parsed.name) });
         }
       }
     }
 
-    // ── Post-filter: drop entries without bib number when bibs are present ─────
-    // If the startlist has bib numbers at all, any entry without a bib is an
-    // artefact (sidebar link, navigation element, etc.) and gets removed.
-    // If NO bibs exist at all (some races don't publish them), keep everything.
     const anyHasBib = entries.some(e => e.rankNum !== '' && e.rankNum !== undefined);
     const bibFiltered = anyHasBib
       ? entries.filter(e => e.rankNum !== '' && e.rankNum !== undefined)
       : entries;
 
-    // ── Post-filter: drop teams that occur exactly once ─────────────────────
-    // A real team always has multiple riders. If a "teamName" appears only
-    // once across all entries, it's almost certainly a mis-parsed artefact
-    // (e.g. a team link picked up as a rider row for a different team) and
-    // gets dropped rather than exported as a fake 1-rider team.
     const teamCounts = new Map();
-    for (const e of bibFiltered) {
-      teamCounts.set(e.teamName, (teamCounts.get(e.teamName) || 0) + 1);
-    }
+    for (const e of bibFiltered) teamCounts.set(e.teamName, (teamCounts.get(e.teamName) || 0) + 1);
     const teamDeduped = bibFiltered.filter(e => teamCounts.get(e.teamName) > 1);
 
-    // ── Post-filter: drop riders whose "name" is actually another team's name ──
-    // Sometimes the DOM-walking logic misattributes a neighbouring team link
-    // as a rider row (e.g. rider "XDS Astana Team" inside "Uno-X Mobility").
-    // Any entry whose riderName is near-identical (>=85%) to ANY team name in
-    // the dataset (its own team's name is fine to compare against too, since
-    // a real rider surname essentially never resembles a team name) gets
-    // dropped as a false positive.
-    function normForCompare(s) {
-      return (s || '').toLowerCase().replace(/[^a-z]/g, '');
-    }
+    function normForCompare(s) { return (s || '').toLowerCase().replace(/[^a-z]/g, ''); }
+
     function similarity(a, b) {
-      // Simple normalized edit-distance-based ratio (0..1), dependency-free.
       a = normForCompare(a); b = normForCompare(b);
       if (!a || !b) return 0;
       const m = a.length, n = b.length;
@@ -774,6 +755,7 @@
       const dist = dp[m][n];
       return 1 - dist / Math.max(m, n);
     }
+
     const allTeamNames = Array.from(new Set(teamDeduped.map(e => e.teamName)));
     const SIMILARITY_THRESHOLD = 0.85;
     const filtered = teamDeduped.filter(e => {
@@ -783,27 +765,26 @@
     return filtered;
   }
 
+  // ─── EXTRACT DATA (router) ─────────────────────────────────────────────────
+
   function extractData(mraId, isToday) {
     try {
       if (mraId==='41') {
         const entries=scrapeStartlist();
         if (!entries.length) return {csv:'',count:0,error:'Keine Startlistendaten gefunden.'};
-        return {csv:buildCSV(entries,'41'),count:entries.length};
+        return {csv:buildCSV(entries,'41'),count:entries.length,entries,mraId:'41',forceTeams:false};
       }
 
       if (mraId==='64'||mraId==='34') {
-        // Teams gesamt or Today — Teams table structure
         const result=scrapeTeamsTable(mraId);
-        if (result.entries.length) return {csv:buildCSV(result.entries,mraId),count:result.entries.length};
+        if (result.entries.length) return {csv:buildCSV(result.entries,mraId),count:result.entries.length,entries:result.entries,mraId,forceTeams:false};
       }
 
       let entries=[];
 
-      // Today points: aggregate sub-tables
       if (isToday && POINTS_MRAS.has(mraId)) {
         entries=scrapeTodayPoints();
       }
-      // KOM/Points Gesamt view showing multiple sprint sub-tables simultaneously
       if (!entries.length && POINTS_MRAS.has(mraId)) {
         const tryToday=scrapeTodayPoints();
         if (tryToday.length) entries=tryToday;
@@ -812,19 +793,13 @@
       if (!entries.length) {
         const table=findVisibleResultsTable();
         if (!table) {
-          // Fallback: TTT (Team Time Trial) stage results have no per-rider
-          // table at all — only a team-level table (TEAM / TIME / +TIME),
-          // which findVisibleResultsTable() never matches because it requires
-          // a rank-numbered row alongside a RIDER/NAME column. Try the
-          // team-table scraper before giving up, using the current mraId
-          // as the CSV column suffix (e.g. at0-match_result, at0-rank).
           const ttListFallback=scrapeTeamsTimeList();
           if (ttListFallback.entries.length) {
-            return {csv:buildCSV(ttListFallback.entries,mraId,true),count:ttListFallback.entries.length};
+            return {csv:buildCSV(ttListFallback.entries,mraId,true),count:ttListFallback.entries.length,entries:ttListFallback.entries,mraId,forceTeams:true};
           }
           const ttFallback=scrapeTeamsTable(mraId);
           if (ttFallback.entries.length) {
-            return {csv:buildCSV(ttFallback.entries,mraId,true),count:ttFallback.entries.length};
+            return {csv:buildCSV(ttFallback.entries,mraId,true),count:ttFallback.entries.length,entries:ttFallback.entries,mraId,forceTeams:true};
           }
           return {csv:'',count:0,error:'Keine sichtbare Ergebnistabelle gefunden.\n\n• Seite evtl. noch nicht vollständig geladen\n• Falscher Tab aktiv\n\n↺ Neu laden klicken.'};
         }
@@ -834,7 +809,7 @@
       }
 
       if (!entries.length) return {csv:'',count:0,error:'Tabelle leer – ↺ Neu laden.'};
-      return {csv:buildCSV(entries,mraId),count:entries.length};
+      return {csv:buildCSV(entries,mraId),count:entries.length,entries,mraId,forceTeams:false};
 
     } catch(err) {
       console.error('[HS v10]',err);
@@ -842,9 +817,12 @@
     }
   }
 
+  // ─── CSV BUILDERS ───────────────────────────────────────────────────────────
+
   function buildCSV(entries, mraId, forceTeams) {
     const isSL=mraId==='41';
     const isTeams=forceTeams||(mraId==='64'||mraId==='34');
+    if (outputFormat==='v1') return buildCSV_AAAV1(entries, isTeams);
     const hdr=isSL
       ?`source_team_id;source_team_name;source_person_id;source_person_name;at${mraId}-rank`
       : isTeams
@@ -860,6 +838,56 @@
           ? `${tid};${e.teamName};${e.resultValue};${e.rankNum}`
           : `${tid};${e.teamName};${pid};${e.riderName};${e.resultValue};${e.rankNum}`
       );
+    }
+    return lines.join('\n');
+  }
+
+  // ─── AAA V1 CSV (legacy upload format) ─────────────────────────────────────
+  // Comma-separated, NO header row. Column order:
+  // Team-Pseudo-ID,Teamname,Person-Pseudo-ID,Person-Vorname,Person-Nachname,
+  // Person-Fullname,rank,match_result,comment,place
+  //
+  // - Team-Pseudo-ID reuses the raw team NAME (not a pc_ slug) in both
+  //   column 1 and 2, per legacy AAA V1 spec.
+  // - Person-Pseudo-ID / Vorname / Nachname (cols 3-5) always stay empty.
+  // - Person-Fullname (col 6) is "NACHNAME Vorname" — surname forced upper
+  //   case regardless of source HTML casing.
+  // - match_result stays empty for DNF/DNS/DSQ/OTL/NR rows — the status
+  //   text goes into "comment" instead.
+  function csvEscapeV1(v) {
+    const s = (v==null?'':String(v));
+    if (/[",\n]/.test(s)) return '"'+s.replace(/"/g,'""')+'"';
+    return s;
+  }
+
+  function buildCSV_AAAV1(entries, isTeams) {
+    const lines=[];
+    for (const e of entries) {
+      const teamName = e.teamName || '';
+      let fullName='', matchResult='', comment='';
+
+      if (isTeams) {
+        const rv=(e.resultValue||'').trim();
+        if (STATUS_MARKERS.test(rv)) comment=rv.toUpperCase();
+        else matchResult=e.resultValue||'';
+      } else {
+        const parts = e.nameParts || splitNameHeuristic(e.riderName||'');
+        fullName = parts.surname ? `${parts.surname} ${parts.firstname}`.trim() : (e.riderName||'').toUpperCase();
+        const rv = (e.resultValue||'').trim();
+        if (STATUS_MARKERS.test(rv)) comment=rv.toUpperCase();
+        else matchResult=e.resultValue||'';
+      }
+
+      lines.push([
+        csvEscapeV1(teamName),
+        csvEscapeV1(teamName),
+        '', '', '',
+        csvEscapeV1(fullName),
+        csvEscapeV1(e.rankNum!=null?e.rankNum:(e.rankText||'')),
+        csvEscapeV1(matchResult),
+        csvEscapeV1(comment),
+        ''
+      ].join(','));
     }
     return lines.join('\n');
   }
@@ -894,20 +922,21 @@
     .hs-badge { display: inline-block !important; background: #e84f2e !important; color: #fff !important; border-radius: 4px !important; padding: 1px 6px !important; font-size: 10px !important; font-weight: 700 !important; margin-left: 4px !important; vertical-align: middle !important; }
     #hs-view-row { display: flex !important; align-items: center !important; gap: 6px !important; }
     #hs-view-row span.hs-vl { font-size: 11px !important; color: #888 !important; }
+    #hs-fmt-row { display: flex !important; align-items: center !important; gap: 6px !important; }
+    #hs-fmt-row span.hs-vl { font-size: 11px !important; color: #888 !important; }
     .hs-pill {
       background: #2a2a2a !important; border: 1px solid #3c3c3c !important; border-radius: 20px !important;
       padding: 3px 10px !important; font-size: 11px !important; color: #777 !important;
-      cursor: default !important; transition: all .15s !important; user-select: none !important;
+      cursor: pointer !important; transition: all .15s !important; user-select: none !important;
       font-weight: 500 !important; opacity: .95 !important;
-      pointer-events: none !important;
     }
-    .hs-pill:hover { border-color: #3c3c3c !important; color: #777 !important; }
+    .hs-pill:hover { border-color: #555 !important; color: #aaa !important; }
     .hs-pill.active { background: #1a3a1a !important; border-color: #3a7a3a !important; color: #56c05a !important; font-weight: 700 !important; }
     .hs-lbl { font-size: 11px !important; color: #888 !important; font-weight: 500 !important; display: block !important; margin-bottom: 4px !important; }
     #hs-sel { width: 100% !important; background: #2a2a2a !important; color: #e2e2e2 !important; border: 1px solid #3c3c3c !important; border-radius: 6px !important; padding: 6px 8px !important; font-size: 12px !important; outline: none !important; cursor: pointer !important; }
     #hs-sel:focus { border-color: #e84f2e !important; }
     #hs-status { font-size: 11px !important; color: #888 !important; min-height: 16px !important; }
-    .hs-ok  { color: #56c05a !important; font-weight: 600 !important; }
+    .hs-ok { color: #56c05a !important; font-weight: 600 !important; }
     .hs-err { color: #e84f2e !important; font-weight: 600 !important; }
     #hs-errmsg { background: #2c1515 !important; border: 1px solid #5e2020 !important; border-radius: 6px !important; padding: 8px 10px !important; color: #e07070 !important; font-size: 11px !important; line-height: 1.5 !important; display: none !important; white-space: pre-wrap !important; }
     #hs-errmsg.vis { display: block !important; }
@@ -928,11 +957,15 @@
   // ─── STATE ────────────────────────────────────────────────────────────────
 
   let pageType   = detectPageType();
-  let isToday    = false;   // true = Tageswertung active
+  let isToday    = false;
   let currentMRA = MRA_MAP[pageType]?.general || '0';
+  let outputFormat = 'v2'; // 'v2' (default, AAA V2) or 'v1' (legacy AAA V1)
   let currentCSV = '';
   let minimised  = false;
   let extractTimer = null;
+  let lastEntries = null;
+  let lastMraForEntries = null;
+  let lastForceTeamsForEntries = null;
 
   function scheduleExtraction(delayMs) {
     if (extractTimer) clearTimeout(extractTimer);
@@ -959,7 +992,7 @@
     currentMRA = today ? mraMap.today : mraMap.general;
     updatePills();
     updateBadgeAndSelect();
-    showLoader();           // ← Ladeanimation vor dem Scrape zeigen
+    showLoader();
     scheduleExtraction(200);
   }
 
@@ -970,8 +1003,15 @@
     if (!gen||!tod) return;
     gen.classList.toggle('active', !isToday);
     tod.classList.toggle('active', isToday);
-    // Hide Today pill for page types that don't have a Today view
     if (row) row.style.display = HAS_TODAY.has(pageType) ? 'flex' : 'none';
+  }
+
+  function updateFormatPills() {
+    const v2 = panel.querySelector('#hs-pill-v2');
+    const v1 = panel.querySelector('#hs-pill-v1');
+    if (!v2||!v1) return;
+    v2.classList.toggle('active', outputFormat==='v2');
+    v1.classList.toggle('active', outputFormat==='v1');
   }
 
   function updateBadgeAndSelect() {
@@ -979,6 +1019,18 @@
     const sel   = panel.querySelector('#hs-sel');
     if (badge) badge.textContent = `AT:${currentMRA}`;
     if (sel)   sel.value = currentMRA;
+  }
+
+  // Rebuild CSV from the last scraped entries using the currently selected
+  // output format, WITHOUT re-scraping the page. Used both when switching
+  // AAA V1/V2 and when changing the MRA dropdown.
+  function rebuildCSVFromLastEntries() {
+    if (!lastEntries) return;
+    const csv = buildCSV(lastEntries, lastMraForEntries, lastForceTeamsForEntries);
+    currentCSV = csv;
+    const csvEl = panel.querySelector('#hs-csv');
+    if (csvEl) csvEl.textContent = csv;
+    try { GM_setClipboard(csv); } catch(e) { navigator.clipboard?.writeText(csv).catch(()=>{}); }
   }
 
   // ─── PANEL BUILD ─────────────────────────────────────────────────────────
@@ -1008,6 +1060,11 @@
           <span class="hs-pill${!isToday?' active':''}" id="hs-pill-gen">Gesamt</span>
           <span class="hs-pill${isToday?' active':''}" id="hs-pill-today">Tageswertung</span>
         </div>
+        <div id="hs-fmt-row">
+          <span class="hs-vl">Format:</span>
+          <span class="hs-pill${outputFormat==='v2'?' active':''}" id="hs-pill-v2">AAA V2</span>
+          <span class="hs-pill${outputFormat==='v1'?' active':''}" id="hs-pill-v1">AAA V1</span>
+        </div>
         <div>
           <label class="hs-lbl" for="hs-sel">Match Result At (MRA):</label>
           <select id="hs-sel">
@@ -1031,16 +1088,32 @@
       panel.querySelector('#hs-bdy').classList.toggle('hs-hide',minimised);
       panel.querySelector('#hs-tog').textContent=minimised?'▲':'▼';
     });
+    panel.querySelector('#hs-pill-gen').addEventListener('click', e => { e.stopPropagation(); if (!isToday) return; setView(false); });
+    panel.querySelector('#hs-pill-today').addEventListener('click', e => { e.stopPropagation(); if (isToday) return; if (!HAS_TODAY.has(pageType)) return; setView(true); });
+    panel.querySelector('#hs-pill-v2').addEventListener('click', e => {
+      e.stopPropagation();
+      if (outputFormat==='v2') return;
+      outputFormat='v2';
+      updateFormatPills();
+      rebuildCSVFromLastEntries();
+    });
+    panel.querySelector('#hs-pill-v1').addEventListener('click', e => {
+      e.stopPropagation();
+      if (outputFormat==='v1') return;
+      outputFormat='v1';
+      updateFormatPills();
+      rebuildCSVFromLastEntries();
+    });
     panel.querySelector('#hs-sel').addEventListener('change', e => {
-      // MRA-Änderung aktualisiert NUR den Header (at[id]-match_result / at[id]-rank),
-      // löst aber KEINEN neuen Scrape aus – die Werte kommen immer von der Seite.
       currentMRA=e.target.value;
       panel.querySelector('#hs-badge').textContent=`AT:${currentMRA}`;
-      // Rebuild CSV header only – re-use existing entries
+      lastMraForEntries = currentMRA;
+      if (outputFormat==='v1') {
+        // AAA V1 has no MRA-specific header, nothing to rebuild.
+        return;
+      }
       if (currentCSV) {
         const csvLines = currentCSV.split('\n');
-        // Replace only the header line (line 0) with updated MRA id
-        // Detect current header structure and rebuild
         const oldHeader = csvLines[0];
         const newHeader = oldHeader.replace(/at\d+-match_result/g, `at${currentMRA}-match_result`)
                                    .replace(/at\d+-rank/g, `at${currentMRA}-rank`);
@@ -1077,19 +1150,21 @@
     if (loaderEl) loaderEl.classList.add('vis');
     currentCSV='';
 
-    // Defer the actual extraction by two animation frames so the browser
-    // has time to paint the spinner before the synchronous scrape blocks the thread.
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      const {csv,count,error} = extractData(currentMRA, isToday);
+      const {csv,count,error,entries,mraId,forceTeams} = extractData(currentMRA, isToday);
 
       if (error||!csv) {
         if (loaderEl) loaderEl.classList.remove('vis');
         if (csvEl) csvEl.style.display='';
         if (statusEl) statusEl.innerHTML='<span class="hs-err">✗ Keine Daten</span>';
         if (errEl)    { errEl.textContent=error||'Unbekannter Fehler.'; errEl.classList.add('vis'); }
+        lastEntries=null;
         return;
       }
 
+      lastEntries=entries;
+      lastMraForEntries=mraId;
+      lastForceTeamsForEntries=forceTeams;
       currentCSV=csv;
       if (loaderEl) loaderEl.classList.remove('vis');
       if (csvEl)    { csvEl.style.display=''; csvEl.textContent=csv; }
@@ -1126,8 +1201,6 @@
   history.replaceState = (...a) => { _repl(...a); onURLChange(); };
   window.addEventListener('popstate', onURLChange);
 
-  // PCS internal view-tab clicks (General/Today on PCS side)
-  // Mirror the state to our pills automatically
   document.addEventListener('click', e => {
     const t=e.target.closest('a,button,[class*="View"]');
     if (!t) return;
@@ -1144,29 +1217,14 @@
 
   buildPanel();
 
-  // ─── SMART INIT ─────────────────────────────────────────────────────────────
-  // Ziel: sofort extrahieren sobald die Ergebnistabelle im DOM steht –
-  // ohne auf Werbung / Bilder / Iframes zu warten (window.load).
-  //
-  // Strategie:
-  //   1. Loader sofort anzeigen
-  //   2. Wenn DOM fertig (interactive/complete): direkt versuchen
-  //   3. Falls Tabelle noch nicht da (dynamisch nachgeladen): MutationObserver
-  //      beobachtet den DOM und feuert sobald eine valide Tabelle erscheint
-  //   4. Fallback nach 8s falls gar nichts gefunden wird
-
   showLoader();
 
   let _initDone = false;
   function _contentIsReady() {
-    // Standard results table
     if (findVisibleResultsTable()) return true;
     if (document.querySelector('table tbody tr')) return true;
-    // Startlist: ready when we see at least one team link + rider content
     if (pageType === 'startlist') {
-      // Variant A: rider links visible
       if (document.querySelector('a[href*="/rider/"]')) return true;
-      // Variant B: a visible team link + at least one nearby <li>
       const teamLinks = document.querySelectorAll('a[href*="/team/"]');
       for (const tl of teamLinks) {
         if (!isVisible(tl)) continue;
@@ -1200,7 +1258,6 @@
     _initObserver.observe(document.body || document.documentElement, {
       childList: true, subtree: true
     });
-    // Fallback: after 8s give up waiting and try anyway
     setTimeout(() => {
       if (!_initDone) {
         _initDone = true;
@@ -1211,7 +1268,6 @@
   }
 
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
-    // DOM already parsed – try immediately, fall back to observer if table not yet there
     _tryInit();
     if (!_initDone) _startObserver();
   } else {
