@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.14
+// @version      29.0.16
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
@@ -865,17 +865,19 @@
     for (const e of entries) {
       const teamName = e.teamName || '';
       let fullName='', matchResult='', comment='';
+      // resultValue can be a number (e.g. aggregated points from
+      // scrapeTodayPoints) as well as a string (times, status markers) —
+      // always coerce to String() before calling .trim()/.test() on it.
+      const rvStr = String(e.resultValue==null?'':e.resultValue).trim();
 
       if (isTeams) {
-        const rv=(e.resultValue||'').trim();
-        if (STATUS_MARKERS.test(rv)) comment=rv.toUpperCase();
-        else matchResult=e.resultValue||'';
+        if (STATUS_MARKERS.test(rvStr)) comment=rvStr.toUpperCase();
+        else matchResult=rvStr;
       } else {
         const parts = e.nameParts || splitNameHeuristic(e.riderName||'');
         fullName = parts.surname ? `${parts.surname} ${parts.firstname}`.trim() : (e.riderName||'').toUpperCase();
-        const rv = (e.resultValue||'').trim();
-        if (STATUS_MARKERS.test(rv)) comment=rv.toUpperCase();
-        else matchResult=e.resultValue||'';
+        if (STATUS_MARKERS.test(rvStr)) comment=rvStr.toUpperCase();
+        else matchResult=rvStr;
       }
 
       lines.push([
