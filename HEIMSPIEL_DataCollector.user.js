@@ -1,21 +1,28 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      33.0.0
+// @version      29.0.5
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
 // @grant        GM_setClipboard
 // @grant        GM_addStyle
+// @grant        GM_info
 // @run-at       document-idle
-// @updateURL    https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
-// @downloadURL  https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
+// @updateURL   https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
+// @downloadURL https://raw.githubusercontent.com/andim82/heimspiel-data-collector/main/HEIMSPIEL_DataCollector.user.js
 // ==/UserScript==
 
 (function () {
   'use strict';
 
   const LOGO_URL = 'https://heimspiel.de/wp-content/uploads/2022/09/logo-weiss-transparent-rgb.png';
+
+  // Internal iteration version (auto-read from the @version header via GM_info,
+  // so this never has to be maintained twice). Displayed in the footer as
+  // "V. 1.0.<build>" so editors can quickly confirm they run the latest script.
+  const INTERNAL_VERSION = (typeof GM_info !== 'undefined' && GM_info.script && GM_info.script.version) || '0.0.0';
+  const DISPLAY_VERSION = `1.0.${INTERNAL_VERSION.replace(/\./g, '')}`;
 
   const MRA_OPTIONS = [
     { id: '0',   label: 'AT:0  – Zeit Einzelwertung (Stage)' },
@@ -124,7 +131,10 @@
 
   function dedupeTime(t) {
     if (!t) return t;
-    const s = t.trim();
+    let s = t.trim();
+    // Normalise leading '*' (PCS special-case marker) to '+' so downstream
+    // time parsers (e.g. calcSecondsFromString) recognise the value correctly.
+    s = s.replace(/[\*\u2217\u204e\uff0a]/g, '+');
     if (s.length % 2 === 0) {
       const half = s.length / 2;
       if (s.slice(0, half) === s.slice(half)) return s.slice(0, half);
@@ -286,18 +296,14 @@
       }
       let nextRank=maxRank+1;
       for (const e of deferred){e.rankNum=nextRank++;entries.push(e);}
-      // Resolve same-time markers (,,) to correct gap values.
-      // Track lastGroupValue: what same-time entries in the current group should inherit.
-      // Rule: same-time after rank 1 → '0:00'; same-time after any other real time → that gap.
-      let lastGroupValue='0:00';
+      let last='';
       for (let i=0;i<entries.length;i++){
         const e=entries[i];
         if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
-          // Real time: update the group value for any following same-time entries
-          lastGroupValue = (i===0) ? '0:00' : e.resultValue;
+          last=e.resultValue;
         } else {
-          // Same-time marker: inherit the current group's value
-          e.resultValue = lastGroupValue;
+          e.resultValue='';
+          e.resultValue=(i===1&&last)?'0:00':last;
         }
       }
       // Prefix '+' to follow-up times
@@ -389,16 +395,19 @@
       // Rank 2  → if PCS shows 0:00 (same as winner) keep as '0:00'; if empty fill with last
       // Rank 3+ → empty/marker → fill with last known real time
       // After fill: prefix '+' to all follow-up times (ranks 2+)
-      // Resolve same-time markers (,,) to correct gap values.
-      // lastGroupValue: what same-time entries in the current group should inherit.
-      // same-time after rank 1 → '0:00'; same-time after any other real time → that gap.
-      let lastGroupValue='0:00';
+      let last='';
       for (let i=0;i<entries.length;i++) {
         const e=entries[i];
+        // Treat same-time markers that may have slipped through as empty
         if (e.resultValue && !isSameTimeMarker(e.resultValue)) {
-          lastGroupValue = (i===0) ? '0:00' : e.resultValue;
+          last=e.resultValue;
         } else {
-          e.resultValue = lastGroupValue;
+          e.resultValue = '';  // clear marker
+          if (i===1 && last) {
+            e.resultValue='0:00';
+          } else {
+            e.resultValue=last;
+          }
         }
       }
       // Prefix '+' to follow-up times (index 1+), but not to winner, not to non-numeric values,
@@ -483,11 +492,17 @@
       if (parts.length < 2) return false;
 
       // Collect firstname words from the right (start upper, contain lowercase)
+      // Note: German ß never has a true uppercase form (toUpperCase() turns it
+      // into "SS"), so a word like "GROßSCHARTNER" would always fail the
+      // "w !== w.toUpperCase()" mixed-case check and get misclassified as a
+      // firstname. We normalise ß -> SS on both sides of the comparison so an
+      // all-caps surname containing ß is still recognised as all-caps.
       const firstnameParts = [];
       for (let i = parts.length - 1; i >= 0; i--) {
         const w = parts[i];
         if (!w || !w[0].match(/[A-Za-z\u00C0-\u024F]/)) return false;
-        if (w[0] === w[0].toUpperCase() && w !== w.toUpperCase()) {
+        const wNorm = w.replace(/ß/g, 'SS');
+        if (w[0] === w[0].toUpperCase() && wNorm !== wNorm.toUpperCase()) {
           firstnameParts.unshift(w); // mixed-case = firstname
         } else {
           break; // all-caps = start of surname zone
@@ -500,7 +515,13 @@
       if (KNOWN_BAD_PREFIXES.has(surnameParts[0].toUpperCase())) return false;
 
       for (const sp of surnameParts) {
-        if (sp !== sp.toUpperCase()) return false; // must be all-caps
+        // Treat German ß as already-uppercase: PCS renders surnames like
+        // "GROßSCHARTNER" with a lowercase ß even in all-caps names, because
+        // German has no true uppercase ß. Without this exception,
+        // sp.toUpperCase() (-> "GROSSSCHARTNER") never equals sp and the
+        // rider gets incorrectly rejected as invalid.
+        const spNorm = sp.replace(/ß/g, 'SS');
+        if (spNorm !== spNorm.toUpperCase()) return false; // must be all-caps
         if (!sp[0].match(/[A-Z\u00C0-\u024F]/)) return false;
         // Single 2-char surname part only OK as part of multi-word surname (DE, LE, VAN etc.)
         if (sp.length < 3 && surnameParts.length === 1) return false;
@@ -621,35 +642,59 @@
       }
     }
 
-    // ── Post-filter ───────────────────────────────────────────────────────────
-    // Build a set of all team names present in the list (normalized lowercase).
-    // Any entry whose riderName matches a teamName in the list is a phantom
-    // artefact (navigation/sidebar link) and must be removed.
-    // e.g. "NSN Cycling Team" or "INEOS Grenadiers" appearing as a person name.
-    const allTeamNamesLC = new Set(entries.map(e => e.teamName.trim().toLowerCase()));
+    // ── Post-filter: drop entries without bib number when bibs are present ─────
+    // If the startlist has bib numbers at all, any entry without a bib is an
+    // artefact (sidebar link, navigation element, etc.) and gets removed.
+    // If NO bibs exist at all (some races don't publish them), keep everything.
+    const anyHasBib = entries.some(e => e.rankNum !== '' && e.rankNum !== undefined);
+    const bibFiltered = anyHasBib
+      ? entries.filter(e => e.rankNum !== '' && e.rankNum !== undefined)
+      : entries;
 
-    function isPhantomRider(entry) {
-      const name = (entry.riderName || '').trim();
-      if (!name) return true;
-      // Check: person name matches any team name in the list (case-insensitive)
-      if (allTeamNamesLC.has(name.toLowerCase())) return true;
-      // Check: person name matches team name without UCI suffix, e.g.
-      // "NSN Cycling Team" matches "NSN Cycling Team (WT)"
-      for (const teamName of allTeamNamesLC) {
-        const stripped = teamName.replace(/\s*\([^)]*\)\s*$/, '').trim();
-        if (stripped && name.toLowerCase() === stripped) return true;
-      }
-      return false;
+    // ── Post-filter: drop teams that occur exactly once ─────────────────────
+    // A real team always has multiple riders. If a "teamName" appears only
+    // once across all entries, it's almost certainly a mis-parsed artefact
+    // (e.g. a team link picked up as a rider row for a different team) and
+    // gets dropped rather than exported as a fake 1-rider team.
+    const teamCounts = new Map();
+    for (const e of bibFiltered) {
+      teamCounts.set(e.teamName, (teamCounts.get(e.teamName) || 0) + 1);
     }
+    const teamDeduped = bibFiltered.filter(e => teamCounts.get(e.teamName) > 1);
 
-    // Filter 1: remove phantom riders
-    const withoutPhantoms = entries.filter(e => !isPhantomRider(e));
-
-    // Filter 2: if bibs are present, drop any remaining entries without a bib
-    const anyHasBib = withoutPhantoms.some(e => e.rankNum !== '' && e.rankNum !== undefined);
-    const filtered = anyHasBib
-      ? withoutPhantoms.filter(e => e.rankNum !== '' && e.rankNum !== undefined)
-      : withoutPhantoms;
+    // ── Post-filter: drop riders whose "name" is actually another team's name ──
+    // Sometimes the DOM-walking logic misattributes a neighbouring team link
+    // as a rider row (e.g. rider "XDS Astana Team" inside "Uno-X Mobility").
+    // Any entry whose riderName is near-identical (>=85%) to ANY team name in
+    // the dataset (its own team's name is fine to compare against too, since
+    // a real rider surname essentially never resembles a team name) gets
+    // dropped as a false positive.
+    function normForCompare(s) {
+      return (s || '').toLowerCase().replace(/[^a-z]/g, '');
+    }
+    function similarity(a, b) {
+      // Simple normalized edit-distance-based ratio (0..1), dependency-free.
+      a = normForCompare(a); b = normForCompare(b);
+      if (!a || !b) return 0;
+      const m = a.length, n = b.length;
+      const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+      for (let i = 0; i <= m; i++) dp[i][0] = i;
+      for (let j = 0; j <= n; j++) dp[0][j] = j;
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          dp[i][j] = a[i - 1] === b[j - 1]
+            ? dp[i - 1][j - 1]
+            : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        }
+      }
+      const dist = dp[m][n];
+      return 1 - dist / Math.max(m, n);
+    }
+    const allTeamNames = Array.from(new Set(teamDeduped.map(e => e.teamName)));
+    const SIMILARITY_THRESHOLD = 0.85;
+    const filtered = teamDeduped.filter(e => {
+      return !allTeamNames.some(tn => similarity(e.riderName, tn) >= SIMILARITY_THRESHOLD);
+    });
 
     return filtered;
   }
@@ -730,8 +775,7 @@
       box-shadow: 0 8px 32px rgba(0,0,0,0.65) !important; overflow: hidden !important;
       display: flex !important; flex-direction: column !important;
       background: #1c1c1c !important; color: #e2e2e2 !important;
-      isolation: isolate !important; transform: translateZ(0) !important;
-      will-change: transform !important; pointer-events: auto !important; line-height: normal !important;
+      isolation: isolate !important; transform: translateZ(0) !important; line-height: normal !important;
     }
     #hs-panel * { box-sizing: border-box !important; font-family: inherit !important; }
     #hs-hdr {
@@ -841,24 +885,7 @@
 
   const panel = document.createElement('div');
   panel.id = 'hs-panel';
-  document.documentElement.appendChild(panel);
-
-  // Enforce inline z-index so no CSS cascade can override it
-  panel.style.setProperty('position', 'fixed', 'important');
-  panel.style.setProperty('z-index', '2147483647', 'important');
-  panel.style.setProperty('bottom', '20px', 'important');
-  panel.style.setProperty('right', '20px', 'important');
-
-  // Re-attach guard: if something moves or hides the panel, put it back
-  const _panelGuard = setInterval(() => {
-    if (!document.documentElement.contains(panel)) {
-      document.documentElement.appendChild(panel);
-    }
-    // Re-enforce critical inline styles in case a script overrides them
-    panel.style.setProperty('position', 'fixed', 'important');
-    panel.style.setProperty('z-index', '2147483647', 'important');
-    panel.style.setProperty('display', panel.getAttribute('data-collapsed') === 'true' ? 'flex' : 'flex', 'important');
-  }, 1500);
+  document.body.appendChild(panel);
 
   function buildPanel() {
     const mraMap = MRA_MAP[pageType] || MRA_MAP.unknown;
@@ -895,7 +922,7 @@
           <button id="hs-copy">📋 In Zwischenablage kopieren</button>
           <button id="hs-rnew">↺ Neu laden</button>
         </div>
-        <div id="hs-foot">HEIM:SPIEL Website Data Collector V. 1.0\nFeedback & Support: andreas.meyer@heimspiel.de</div>
+        <div id="hs-foot">HEIM:SPIEL Website Data Collector V. ${DISPLAY_VERSION}\nFeedback & Support: andreas.meyer@heimspiel.de</div>
       </div>`;
 
     // Events
