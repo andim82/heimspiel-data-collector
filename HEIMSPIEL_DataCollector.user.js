@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HEIM:SPIEL Website Data Collector
 // @namespace    https://heimspiel.de
-// @version      29.0.16
+// @version      29.1.0
 // @description  Strukturiertes Auslesen von Procyclingstats.com Daten für die HEIM:SPIEL Datenbank
 // @author       HEIM:SPIEL
 // @match        https://www.procyclingstats.com/race/*
@@ -167,22 +167,120 @@
     return clone.textContent.replace(/\s+/g, ' ').trim();
   }
 
-  function extractTeamName(td) {
+  function extractTeamName(td, riderTd) {
+    // CONFIRMED PCS-SIDE DATA BUG: on some result rows (e.g. rank-trend
+    // tables with "Prev"/"▼▲"/"Time won/lost" columns), the dedicated
+    // team <td class="cu600"> can contain a swapped/incorrect team link —
+    // verified via live DOM inspection where two adjacent riders had their
+    // team <td> contents literally exchanged with each other. However,
+    // PCS ALSO independently embeds the rider's correct team name in a
+    // hidden mobile-only element inside the RIDER cell itself:
+    // <div class="showIfMobile ..."> Team Name </div>, sitting right next
+    // to that rider's name/link — and this value has been confirmed
+    // correct in the buggy rows. We therefore prefer that mobile div's
+    // text (scoped to the SAME row/rider) whenever it is present, and
+    // only fall back to the dedicated team <td> when it's missing.
+    if (riderTd) {
+      const mobileDiv = riderTd.querySelector('.showIfMobile');
+      if (mobileDiv) {
+        const t = extractVisibleText(mobileDiv).trim();
+        if (t) return t;
+      }
+      const directText = cleanCellText(riderTd);
+      const m = directText.match(/([A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*)*\s*[-|]\s*[A-Z].*)$/);
+      if (m && m[1]) return m[1].trim();
+    }
     if (!td) return '';
-    const a = td.querySelector('a');
-    if (a) return a.textContent.replace(/\s+/g, ' ').trim();
+    // PCS can embed MULTIPLE <a> links in the team cell for riders with an
+    // already-announced transfer (e.g. a hidden old/future-team link plus
+    // the visible current-team link). querySelector('a') would blindly grab
+    // whichever link comes FIRST in the DOM, regardless of visibility —
+    // if that happens to be the hidden one, the wrong team gets extracted
+    // (e.g. rider shown under a team they no longer/not yet ride for).
+    // We therefore prefer the first genuinely VISIBLE link, and only fall
+    // back to the first link in the DOM if none are visible.
+    const links = Array.from(td.querySelectorAll('a'));
+    const visibleLink = links.find(l => isVisible(l));
+    const a = visibleLink || links[0];
+    if (a) return extractVisibleText(a);
     return cleanCellText(td);
   }
 
-  function extractRiderName(riderTd, teamName) {
+  // ─── VISIBLE-TEXT EXTRACTION ────────────────────────────────────────────────
+  // PCS occasionally embeds a HIDDEN nested element inside a rider/team link
+  // (e.g. a future/transfer team badge for riders with an already-announced
+  // team change, hidden via CSS display:none/visibility:hidden but still
+  // present in the DOM). el.textContent reads that hidden text too, which
+  // silently corrupts the scraped name by appending an unrelated team name
+  // directly after it (no separator) — e.g. "Martinez LennyBahrain - Victorious".
+  // This walks the DOM tree and only concatenates text from nodes that are
+  // actually visible, filtering out any such hidden artefacts robustly.
+  function extractVisibleText(el) {
+    if (!el) return '';
+    let out = '';
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.textContent;
+      } else if (child.nodeType === Node.ELEMENT_NODE) {
+        // PCS duplicates the team name inside the rider-name cell for the
+        // mobile view via <div class="showIfMobile">Teamname</div>. On
+        // narrow viewports/zoom levels the media query makes this element
+        // GENUINELY visible, so isVisible() lets it through and the team
+        // name gets appended directly to the rider name with no separator
+        // (e.g. "Martinez LennyBahrain - Victorious"). This element is
+        // therefore always excluded, regardless of its actual visibility.
+        if (child.classList && child.classList.contains('showIfMobile')) continue;
+        if (!isVisible(child)) continue;
+        out += extractVisibleText(child);
+      }
+    }
+    return out.replace(/\s+/g, ' ').trim();
+  }
+
+  // ─── KNOWN TEAM NAMES (robust suffix-stripping) ──────────────────────────
+  // PCS sometimes concatenates a team name directly onto the rider name
+  // with no separator (e.g. "Martinez LennyBahrain - Victorious"). This
+  // can happen via a sibling mobile-duplicate <div> or other DOM quirks
+  // that the visibility-based filtering in extractVisibleText() cannot
+  // reliably catch in every layout. As a robust safety net, we read the
+  // full, authoritative list of team names in this race from the
+  // "all teams" filter dropdown (present on every PCS results page) and
+  // strip any such known team name if it appears appended to a rider name.
+  let _knownTeamNamesCache = null;
+  function getKnownTeamNames() {
+    if (_knownTeamNamesCache) return _knownTeamNamesCache;
+    const opts = Array.from(document.querySelectorAll('select.filterResults[data-type="team"] option'))
+      .map(o => (o.textContent || '').trim())
+      .filter(t => t && t.toLowerCase() !== 'all teams');
+    _knownTeamNamesCache = opts.sort((a, b) => b.length - a.length);
+    return _knownTeamNamesCache;
+  }
+
+  function stripKnownTeamSuffix(name, teamNameHint) {
+    if (!name) return name;
+    let result = name;
+    const hint = (teamNameHint || '').trim();
+    if (hint && result.endsWith(hint) && result.length > hint.length) {
+      return result.slice(0, result.length - hint.length).trim();
+    }
+    const known = getKnownTeamNames();
+    for (const t of known) {
+      if (t && result.endsWith(t) && result.length > t.length) {
+        return result.slice(0, result.length - t.length).trim();
+      }
+    }
+    return result;
+  }
+
+    function extractRiderName(riderTd, teamName) {
     if (!riderTd) return '';
     const riderLink = riderTd.querySelector('a[href*="/rider/"]');
-    if (riderLink) return riderLink.textContent.replace(/\s+/g, ' ').trim();
+    if (riderLink) return stripKnownTeamSuffix(extractVisibleText(riderLink), teamName);
     const raw  = cleanCellText(riderTd);
     const team = (teamName || '').trim();
     if (team && raw.endsWith(team)) return raw.slice(0, raw.length - team.length).trim();
     if (team && raw.includes(team)) return raw.slice(0, raw.indexOf(team)).trim();
-    return raw;
+    return stripKnownTeamSuffix(raw, teamName);
   }
 
   // ─── RIDER NAME SPLIT (for AAA V1 export: "NACHNAME Vorname") ─────────────
@@ -206,14 +304,22 @@
     const riderLink = riderTd.querySelector('a[href*="/rider/"]');
 
     if (riderLink) {
-      const full = riderLink.textContent.replace(/\s+/g, ' ').trim();
+      const rawFull = extractVisibleText(riderLink);
+      const full = stripKnownTeamSuffix(rawFull, teamName);
       const upperSpan = riderLink.querySelector('span.uppercase');
-      if (upperSpan) {
-        const surname = upperSpan.textContent.replace(/\s+/g, ' ').trim().toUpperCase();
+      if (upperSpan && isVisible(upperSpan)) {
+        const surname = extractVisibleText(upperSpan).toUpperCase();
         const clone = riderLink.cloneNode(true);
         const spanClone = clone.querySelector('span.uppercase');
         if (spanClone) spanClone.remove();
-        const firstname = clone.textContent.replace(/\s+/g, ' ').trim();
+        // Re-derive firstname from the already-hidden-filtered `full` string
+        // by stripping the surname prefix, instead of reading textContent
+        // off the clone (which would reintroduce any hidden nested text).
+        // `full` has already had any appended team-name suffix stripped.
+        const upperText = extractVisibleText(upperSpan);
+        const firstname = full.startsWith(upperText)
+          ? stripKnownTeamSuffix(full.slice(upperText.length).trim(), teamName)
+          : stripKnownTeamSuffix(full.replace(surname, '').trim(), teamName);
         return { surname, firstname, full };
       }
       return splitNameHeuristic(full);
@@ -224,6 +330,7 @@
     let full = raw;
     if (team && raw.endsWith(team)) full = raw.slice(0, raw.length - team.length).trim();
     else if (team && raw.includes(team)) full = raw.slice(0, raw.indexOf(team)).trim();
+    full = stripKnownTeamSuffix(full, teamName);
     return splitNameHeuristic(full);
   }
 
@@ -252,23 +359,60 @@
   // ─── FIND VISIBLE RESULTS TABLE ───────────────────────────────────────────
 
   function findVisibleResultsTable() {
-    let best = null, bestRows = 0;
-    for (const t of document.querySelectorAll('table')) {
-      if (!isVisible(t)) continue;
-      const map = getColMap(t);
-      if (!map) continue;
-      const bodyRows = Array.from(t.querySelectorAll('tbody tr'));
-      let hasRankRow = false;
-      for (const row of bodyRows) {
-        if (!isVisible(row)) continue;
-        const rnkTxt = (row.querySelectorAll('td')[map.rnk!==undefined?map.rnk:0]?.textContent||'').trim();
-        if (/^\d+$/.test(rnkTxt)||/^(dns|dnf|dnq|nr|dsq|otl)$/i.test(rnkTxt)) { hasRankRow=true; break; }
-      }
-      if (!hasRankRow) continue;
-      const visRows = bodyRows.filter(r=>isVisible(r)).length;
-      if (visRows > bestRows) { bestRows=visRows; best=t; }
+    // PCS can render TWO different eligible result tables for the same
+    // GC/points/kom page: the plain results table, and a "history/trend"
+    // variant (columns "prev", "▼▲" rank-change arrows, "time won/lost")
+    // with a confirmed PCS-side data bug where adjacent same-bib rows can
+    // have swapped rider/team pairings. Between two otherwise-equal
+    // candidates, the plain one is always preferred.
+    const isTrendTable = (t) => !!t.querySelector('td.time_wonlost, a.TimeWonLostFromRider');
+
+    // AUTHORITATIVE SIGNAL: PCS wraps each tab's whole results panel in
+    // <div class="resTab" data-id="..."> inside <div id="resultsCont">.
+    // The INACTIVE tab's panel carries an extra "hide" class AND an inline
+    // style="display: none" (confirmed via live DOM inspection); the
+    // ACTIVE tab's panel (matching whatever tab — GC/Stage/Points/KOM —
+    // the user currently has open) has neither. This is a structural
+    // PCS-authored marker of "which tab is currently selected", unlike
+    // generic computed-style visibility checks, which can be fooled by
+    // unrelated CSS (overflow containers, animations, etc.) and were the
+    // root cause of earlier regressions in this function. Restrict the
+    // search to tables inside the active resTab panel whenever one exists.
+    let searchRoots = [document];
+    const resultsCont = document.getElementById('resultsCont');
+    if (resultsCont) {
+      const activeTabs = Array.from(resultsCont.querySelectorAll(':scope > div.resTab'))
+        .filter(d => !d.classList.contains('hide') && d.style.display !== 'none');
+      if (activeTabs.length) searchRoots = activeTabs;
     }
-    return best;
+
+    let candidates = [];
+    for (const root of searchRoots) {
+      for (const t of root.querySelectorAll('table')) {
+        const map = getColMap(t);
+        if (!map) continue;
+        const bodyRows = Array.from(t.querySelectorAll('tbody tr'));
+        let hasRankRow = false;
+        for (const row of bodyRows) {
+          const rnkTxt = (row.querySelectorAll('td')[map.rnk!==undefined?map.rnk:0]?.textContent||'').trim();
+          if (/^\d+$/.test(rnkTxt)||/^(dns|dnf|dnq|nr|dsq|otl)$/i.test(rnkTxt)) { hasRankRow=true; break; }
+        }
+        if (!hasRankRow) continue;
+        const rowCount = bodyRows.length;
+        candidates.push({ t, rowCount, trend: isTrendTable(t), visible: isVisible(t) });
+      }
+    }
+    if (!candidates.length) return null;
+    // Secondary tie-breaker (only relevant if the active resTab panel
+    // itself contains more than one qualifying table, e.g. plain + trend
+    // variant nested together): prefer visible over hidden, then plain
+    // over trend, then more rows over fewer.
+    const visibleCands = candidates.filter(c => c.visible);
+    const pool = visibleCands.length ? visibleCands : candidates;
+    const plain = pool.filter(c => !c.trend);
+    const finalPool = plain.length ? plain : pool;
+    finalPool.sort((a,b) => b.rowCount - a.rowCount);
+    return finalPool[0].t;
   }
 
   // ─── TEAMS TABLE ──────────────────────────────────────────────────────────
@@ -318,8 +462,7 @@
         const rankNum=isNonNumeric?null:parseInt(rnkRaw,10);
         if (rankNum!==null&&rankNum>maxRank) maxRank=rankNum;
         const teamTd=tds[cmap.team];
-        const teamLink=teamTd?.querySelector('a');
-        const teamName=teamLink?teamLink.textContent.replace(/\s+/g,' ').trim():cleanCellText(teamTd);
+        const teamName=extractTeamName(teamTd);
         if (!teamName) continue;
         let resultValue='';
         if (hasGapCol) {
@@ -371,7 +514,7 @@
 
   function scrapeTeamsTimeList() {
     const teamLinks = Array.from(document.querySelectorAll('li a[href^="team/"], li a[href*="/team/"]'))
-      .filter(a => isVisible(a) && a.textContent.trim().length >= 3);
+      .filter(a => isVisible(a) && extractVisibleText(a).length >= 3);
     if (!teamLinks.length) return { entries: [], error: null };
 
     const entries = [];
@@ -381,7 +524,7 @@
       const li = link.closest('li');
       if (!li || seenTeams.has(li)) continue;
 
-      const teamName = link.textContent.replace(/\s+/g, ' ').trim();
+      const teamName = extractVisibleText(link);
       if (!teamName) continue;
 
       let rankBlock = link.closest('div.w50, div[class*="w50"]');
@@ -419,6 +562,71 @@
 
   // ─── SCRAPE MAIN TABLE ────────────────────────────────────────────────────
 
+  // innerText liefert nur sichtbar gerenderten Text (respektiert
+  // display:none/visibility:hidden und die tatsaechliche Render-Reihenfolge).
+  // Versteckte Duplikat-/Trend-Zeilen mit vertauschten Rider-Bloecken
+  // (bekannter PCS-Bug, siehe isTrendTable/time_wonlost) werden dadurch
+  // automatisch ignoriert, weil sie nie visuell angezeigt werden. Das
+  // Ergebnis dient als autoritative Referenz fuer Rang->Fahrername-Zuordnung.
+  function getVisibleRowOrder(table) {
+    const raw = table.innerText || '';
+    const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
+    const rowOrder = [];
+    for (const line of lines) {
+      const rnkMatch = line.match(/^(\d+)\b/);
+      if (!rnkMatch) continue;
+      rowOrder.push({ rankNum: parseInt(rnkMatch[1], 10), lineText: line });
+    }
+    return rowOrder;
+  }
+
+  // Gleicht die per DOM extrahierten `entries` (koennen bei bestimmten
+  // Raengen falsch gepaarte Rider/Team-Bloecke enthalten, ein bestaetigter
+  // PCS-seitiger Bug in bestimmten Tabellen-Varianten) gegen die
+  // innerText-Ground-Truth ab. Fuer jeden Rang wird geprueft, ob der
+  // DOM-ermittelte Rider-Name tatsaechlich in der sichtbar gerenderten
+  // Zeile fuer diesen Rang vorkommt. Ist das nicht der Fall, wird der
+  // korrekte Identity-Block (Name, Team, nameParts) aus der Zeile eines
+  // ANDEREN Rangs uebernommen, der textlich passt - Rang und Zeit bleiben
+  // dabei unangetastet, da diese laut Analyse bereits korrekt sind.
+  function reconcileWithVisibleOrder(entries, table) {
+    const rowOrder = getVisibleRowOrder(table);
+    if (!rowOrder.length) return entries;
+
+    const byRank = {};
+    rowOrder.forEach(r => { byRank[r.rankNum] = r.lineText; });
+
+    const usedIdx = new Set();
+
+    for (const e of entries) {
+      const lineText = byRank[e.rankNum];
+      if (!lineText) continue;
+
+      const nameGuess = (e.nameParts && e.nameParts.full) ? e.nameParts.full : e.riderName;
+      if (nameGuess && lineText.includes(nameGuess)) continue; // bereits korrekt
+
+      // Rider passt NICHT zur sichtbaren Zeile dieses Rangs -> suche, welcher
+      // andere Eintrag textlich zu dieser Zeile passt, und tausche die
+      // Identity-Bloecke (nicht rankNum/resultValue) zwischen beiden Zeilen.
+      for (let j = 0; j < entries.length; j++) {
+        if (usedIdx.has(j)) continue;
+        const other = entries[j];
+        if (other.rankNum === e.rankNum) continue;
+        const otherLine = byRank[other.rankNum];
+        if (!otherLine) continue;
+        const otherNameGuess = (other.nameParts && other.nameParts.full) ? other.nameParts.full : other.riderName;
+        if (otherNameGuess && lineText.includes(otherNameGuess)) {
+          const tmpName = e.riderName, tmpTeam = e.teamName, tmpParts = e.nameParts;
+          e.riderName = other.riderName; e.teamName = other.teamName; e.nameParts = other.nameParts;
+          other.riderName = tmpName; other.teamName = tmpTeam; other.nameParts = tmpParts;
+          usedIdx.add(j);
+          break;
+        }
+      }
+    }
+    return entries;
+  }
+
   function scrapeTable(table, mraId) {
     const map = getColMap(table);
     if (!map) return {entries:[],error:'Keine Rider/Team-Spalten erkannt.'};
@@ -429,7 +637,6 @@
     let isTT=false;
     if (isTime && map.time!==undefined) {
       for (const row of table.querySelectorAll('tbody tr')) {
-        if (!isVisible(row)) continue;
         const tds=row.querySelectorAll('td');
         if (tds.length<3) continue;
         const raw=extractTimeText(tds[map.time]);
@@ -441,7 +648,16 @@
     const entries=[],deferred=[];
 
     for (const row of table.querySelectorAll('tbody tr')) {
-      if (!isVisible(row)) continue;
+      // NOTE: rows are intentionally NOT filtered by isVisible(row) here.
+      // findVisibleResultsTable() can legitimately select a table that PCS
+      // currently keeps CSS-hidden (display:none up the ancestor chain)
+      // while a different, buggy "trend" table is toggled visible instead
+      // — the hidden one is still the authoritative, correct data source.
+      // isVisible(row) checks the full ancestor chain, so it would reject
+      // every single row of a hidden-but-selected table and produce zero
+      // entries ("Keine sichtbaren Einträge gefunden"). Row-level noise
+      // (stray non-data rows) is already filtered below by rankRaw/tds
+      // checks, so this extra visibility gate is both redundant and wrong.
       const tds=row.querySelectorAll('td');
       if (tds.length<3) continue;
       if (Array.from(tds).some(td=>parseInt(td.getAttribute('colspan')||'1')>2)) continue;
@@ -454,12 +670,24 @@
       const rankNum=isNonNumeric?null:parseInt(rankRaw,10);
       if (rankNum!==null&&rankNum>maxRank) maxRank=rankNum;
 
-      const teamName=extractTeamName(tds[map.team]);
+      // Locate the rider/team cells by CONTENT (their characteristic link),
+      // not by fixed column index. A single row with an extra/missing cell
+      // (e.g. jersey icon, sponsor badge) shifts tds[] positions only for
+      // that row, which previously caused rider+team to be read from the
+      // wrong cell for adjacent rows (rank/time stayed correct, rider and
+      // team got mismatched/swapped). This is robust regardless of the
+      // exact cell count in any given row.
+      const riderLinkEl = row.querySelector('a[href*="/rider/"]');
+      const riderTdActual = riderLinkEl ? riderLinkEl.closest('td') : tds[map.rider];
+      const teamLinkEl = row.querySelector('a[href*="/team/"]');
+      const teamTdActual = teamLinkEl ? teamLinkEl.closest('td') : tds[map.team];
+
+      const teamName=extractTeamName(teamTdActual, riderTdActual);
       if (!teamName) continue;
-      const riderName=extractRiderName(tds[map.rider],teamName);
+      const riderName=extractRiderName(riderTdActual,teamName);
       if (!riderName||riderName.length>60) continue;
       if (/relegated|from \d+th to \d+/i.test(riderName)) continue;
-      const nameParts=extractRiderNameParts(tds[map.rider],teamName);
+      const nameParts=extractRiderNameParts(riderTdActual,teamName);
 
       let resultValue='';
       if (isTime) {
@@ -523,6 +751,13 @@
       }
     }
 
+    if (isTime) {
+      // Ground-Truth-Abgleich gegen den sichtbar gerenderten Text der
+      // Tabelle, um den bestaetigten PCS-Bug (vertauschte Rider/Team-
+      // Bloecke bei bestimmten benachbarten Raengen) zu korrigieren.
+      reconcileWithVisibleOrder(entries, table);
+    }
+
     return {entries,error:entries.length?null:'Keine sichtbaren Einträge gefunden.'};
   }
 
@@ -547,12 +782,17 @@
         if (tds.length<=map.pnt) continue;
         if (!/^\d+$/.test((tds[map.rnk!==undefined?map.rnk:0]?.textContent||'').trim())) continue;
 
-        const teamName=extractTeamName(tds[map.team]);
-        const riderLink=tds[map.rider]?.querySelector('a[href*="/rider/"]');
+        const riderLinkEl2 = row.querySelector('a[href*="/rider/"]');
+        const riderTdActual2 = riderLinkEl2 ? riderLinkEl2.closest('td') : tds[map.rider];
+        const teamLinkEl2 = row.querySelector('a[href*="/team/"]');
+        const teamTdActual2 = teamLinkEl2 ? teamLinkEl2.closest('td') : tds[map.team];
+
+        const teamName=extractTeamName(teamTdActual2, riderTdActual2);
+        const riderLink=riderTdActual2?.querySelector('a[href*="/rider/"]');
         const riderKey=riderLink?riderLink.getAttribute('href').split('/rider/')[1]||'':null;
         const riderName=riderLink
-          ?riderLink.textContent.replace(/\s+/g,' ').trim()
-          :extractRiderName(tds[map.rider],teamName);
+          ?stripKnownTeamSuffix(extractVisibleText(riderLink),teamName)
+          :extractRiderName(riderTdActual2,teamName);
         if (!riderName||!teamName) continue;
 
         const pts=parseInt(tds[map.pnt].textContent.trim(),10);
@@ -563,7 +803,7 @@
           totals[key]=0;
           riderNames[key]=riderName;
           teamNames[key]=teamName;
-          ridersParts[key]=extractRiderNameParts(tds[map.rider],teamName);
+          ridersParts[key]=extractRiderNameParts(riderTdActual2,teamName);
         }
         totals[key]+=pts;
       }
@@ -656,12 +896,12 @@
 
     const teamLinks = Array.from(document.querySelectorAll('a[href*="/team/"]'))
       .filter(a => {
-        const t = (a.textContent || '').replace(/\s+/g, ' ').trim();
+        const t = extractVisibleText(a);
         return t.length >= 3 && !/statistics|statistics in race/i.test(t);
       });
 
     for (const tLink of teamLinks) {
-      const teamName = (tLink.textContent || '').replace(/\s+/g, ' ').trim();
+      const teamName = extractVisibleText(tLink);
       if (!teamName || processedTeams.has(teamName)) continue;
 
       let container = tLink.parentElement;
